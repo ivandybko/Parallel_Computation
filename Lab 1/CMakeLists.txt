@@ -2,6 +2,20 @@ cmake_minimum_required(VERSION 3.30)
 project(Lab_1)
 
 set(CMAKE_CXX_STANDARD 14)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-add_executable(Lab_1
-        main.cpp)
+# Указываем компиляторы из Homebrew LLVM (не Apple Clang!)
+set(CMAKE_C_COMPILER "/opt/homebrew/opt/llvm/bin/clang")
+set(CMAKE_CXX_COMPILER "/opt/homebrew/opt/llvm/bin/clang++")
+
+# Пути к установленному OpenMP (libomp)
+include_directories("/opt/homebrew/opt/libomp/include")
+link_directories("/opt/homebrew/opt/libomp/lib")
+
+# Флаги для компиляции и линковки
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Xpreprocessor -fopenmp -I/opt/homebrew/opt/libomp/include -L/opt/homebrew/opt/libomp/lib")
+set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -lomp -L/opt/homebrew/opt/libomp/lib")
+set(CMAKE_CXX_FLAGS_RELEASE "-O3 -fopenmp -ffast-math -march=native -funroll-loops -fomit-frame-pointer -DNDEBUG")
+
+add_executable(Lab_1 LU_Dybko.cpp)
+target_link_libraries(Lab_1 PRIVATE omp)
