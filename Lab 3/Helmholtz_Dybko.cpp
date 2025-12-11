@@ -3,9 +3,22 @@
 #include <vector>
 #include <cmath>
 #include <mpi.h>
+#include <algorithm>
+#include <fstream>
 
-int n = 1000;
-double eps = 1e-6;
+int n = 101;
+double eps = 1e-8;
+
+
+void matrix_print(const std::vector<double>& matrix, int m, int k) {
+	for (int i = 0; i < m; ++i) {
+		for (int j = 0; j < k; ++j) {
+			std::cout  << matrix[i * k + j] << " ";
+		}
+		std::cout << "\n";
+	}
+	std::cout << "\n";
+}
 
 double f(double x, double y, double k)
 {
@@ -17,15 +30,22 @@ double sol(double x, double y)
 	return (1.0 - x) * x * std::sin(M_PI * y);
 }
 
+void init_boundaries(std::vector<double>& local_grid, int local_rows, int start_row, int n) {
+	for (int li = 0; li < local_rows; ++li) {
+		local_grid[li * n + 0] = 0.0;      // x = 0
+		local_grid[li * n + (n - 1)] = 0.0;  // x = 1
+	}
+}
+
 double calculate_error(std::vector<double> &num_solution, double solution(double, double), double h){
 	double error = 0.0;
 //	double diff = 0.0;
-	#pragma omp parallel for collapse(2)
-	for (int i = 1; i < n; ++i){
-		for (int j = 1; j < n; ++j){
+//	#pragma omp parallel for collapse(2)
+	for (int i = 0; i < n; ++i){
+		for (int j = 0; j < n; ++j){
 			auto diff = std::fabs(num_solution[i * n + j] - solution(i*h, j*h));
 			if (diff > error){
-				#pragma omp critical
+	//				#pragma omp critical
 				error = std::max(diff, error);
 			}
 		}
@@ -33,33 +53,33 @@ double calculate_error(std::vector<double> &num_solution, double solution(double
 	return error;
 }
 
-bool Jacoby(std::vector<double> &grid, double h, double k, int max_iter){
-	double diff = 0.0;
-	std::vector<double> grid_old(grid);
-	double denominator = (4.0 + k * k * h * h);
-	double h2 = h * h;
-	double max_diff = 0.0;
-	for (int iter = 0; iter < max_iter; ++iter ){
-//		#pragma omp parallel for
-		for (int i = 1; i < n-1; ++i)
-			for (int j = 1; j < n-1; ++j){
-				int index = i * n + j;
-				grid[index] = (h2 * f(h * i, h * j, k)  +  grid_old[index + n] + grid_old[index -n]+ grid_old[index + 1] + grid_old[index - 1]) / denominator;
-				diff = std::fabs(grid[index] - grid_old[index]);
-				if (diff > max_diff) {
-//					#pragma omp critical
-					max_diff = std::max(diff, max_diff);
-				}
-			}
-		if (max_diff < eps){
-			std::cout << "Jacoby converged after " << iter << " iterations" << std::endl;
-			return true;
-		}
-		grid.swap(grid_old);
-		max_diff = 0.0;
- 	}
-	return false;
-}
+//bool Jacoby(std::vector<double> &grid, double h, double k, int max_iter){
+//	double diff = 0.0;
+//	std::vector<double> grid_old(grid);
+//	double denominator = (4.0 + k * k * h * h);
+//	double h2 = h * h;
+//	double max_diff = 0.0;
+//	for (int iter = 0; iter < max_iter; ++iter ){
+////		#pragma omp parallel for
+//		for (int i = 1; i < n-1; ++i)
+//			for (int j = 1; j < n-1; ++j){
+//				int index = i * n + j;
+//				grid[index] = (h2 * f(h * i, h * j, k)  +  grid_old[index + n] + grid_old[index -n]+ grid_old[index + 1] + grid_old[index - 1]) / denominator;
+//				diff = std::fabs(grid[index] - grid_old[index]);
+//				if (diff > max_diff) {
+////					#pragma omp critical
+//					max_diff = std::max(diff, max_diff);
+//				}
+//			}
+//		if (max_diff < eps){
+//			std::cout << "Jacoby converged after " << iter << " iterations" << std::endl;
+//			return true;
+//		}
+//		grid.swap(grid_old);
+//		max_diff = 0.0;
+// 	}
+//	return false;
+//}
 
 bool Jacoby_MPI(
 	std::vector<double>& local_grid,
@@ -85,15 +105,22 @@ bool Jacoby_MPI(
 	std::vector<double> bottom(n, 0.0);
 
 	MPI_Request req[4];
-	MPI_Status stat[4];
+//	MPI_Status stat[4];
 
 	double max_diff_local = 0.0;
 	double global_max_diff = 0.0;
-
+	double t1 = 0.0, t2 = 0.0, t3 =0.0,  t_total = 0.0, t_wait = 0.0;
 	for (int iter = 0; iter < max_iter; ++iter) {
 		max_diff_local = 0.0;
 		const double* my_top_most = local_grid_old.data(); // первая строка моих данных в local_grid_old
 		const double* my_bottom_most = local_grid_old.data() + (local_rows - 1) * n; // последняя строка моих данных в local_grid_old
+
+		if (rank == 0) {
+			std::fill(top.begin(), top.end(), 0.0);
+		}
+		if (rank == size - 1) {
+			std::fill(bottom.begin(), bottom.end(), 0.0);
+		}
 
 		if (send_type == 1){
 			MPI_Send(my_bottom_most,n, MPI_DOUBLE, lower, 0, MPI_COMM_WORLD);
@@ -104,6 +131,7 @@ bool Jacoby_MPI(
 		}
 		if (send_type == 2)
 		{
+
 			MPI_Sendrecv(my_bottom_most, n, MPI_DOUBLE, lower, 0,
 				         top.data(),n, MPI_DOUBLE, upper, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
 
@@ -111,35 +139,106 @@ bool Jacoby_MPI(
 				         bottom.data(),n, MPI_DOUBLE, lower, 1, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
 
 		}
-		else
+		if (send_type == 3)
 		{
+			t1 = MPI_Wtime();
+
 			MPI_Isend(my_bottom_most,n, MPI_DOUBLE, lower, 0, MPI_COMM_WORLD, &req[0]);
 			MPI_Irecv(top.data(),n, MPI_DOUBLE, upper, 0, MPI_COMM_WORLD, &req[1]);
 
 			MPI_Isend(my_top_most,n, MPI_DOUBLE, upper, 1, MPI_COMM_WORLD, &req[2]);
 			MPI_Irecv(bottom.data(),n, MPI_DOUBLE, lower, 1, MPI_COMM_WORLD, &req[3]);
+			t2 = MPI_Wtime();
 
-			MPI_Waitall(4, req, stat);
+			for (int li = 1; li < local_rows - 1; ++li) {
+				int i = start_row + li;
+				if (i < 1 or i > n - 2) continue;
+				//#pragma omp parallel for
+				for (int j = 1; j < n - 1; ++j) {
+					int index = li * n + j;
+					double up = local_grid_old[index - n];
+					double down  = local_grid_old[index + n];
+					local_grid[index] =
+						(h2 * f(h * i, h * j, k) +
+						up +
+						down +
+						local_grid_old[index - 1] +
+						local_grid_old[index + 1]) / denominator;
+					double diff = std::fabs(local_grid[index] - local_grid_old[index]);
+					max_diff_local = std::max(max_diff_local, diff);
+				}
+
+			}
+			t3 = MPI_Wtime();
+			MPI_Waitall(4, req, MPI_STATUS_IGNORE);
+			t_total += (MPI_Wtime() - t1);
+			t_wait += (MPI_Wtime() - t3);
+
+			int li=0; int i=start_row;
+			if (i != 0 ) {
+				for (int j = 1; j < n - 1; ++j) {
+					int idx = j;
+					double up = top[j];
+					double down = local_grid_old[idx + n];
+					local_grid[idx] =
+						(h2 * f(h * i, h * j, k) +
+						up +
+						down +
+						local_grid_old[idx - 1] +
+						local_grid_old[idx + 1]) /
+						denominator;
+					max_diff_local = std::max(max_diff_local, std::fabs(local_grid[idx] - local_grid_old[idx]));
+				}
+			}
+
+			li=local_rows-1; i=start_row+li;
+			if (i != n-1) {
+				for (int j = 1; j < n - 1; ++j) {
+					int idx = li * n + j;
+					double up = local_grid_old[idx - n];
+					double down = bottom[j];
+					local_grid[idx] =
+						(h2 * f(h * i, h * j, k) +
+						up +
+						down +
+						local_grid_old[idx - 1] +
+						local_grid_old[idx + 1]) /
+						denominator;
+					max_diff_local = std::max(max_diff_local, std::fabs(local_grid[idx] - local_grid_old[idx]));
+				}
+			}
+
 		}
-
-		for (int li = 0; li < local_rows; ++li) {
-			int i = start_row + li;
-			if (i < 1 || i > n - 2) continue;
-			//#pragma omp parallel for
-			for (int j = 1; j < n - 1; ++j) {
-				int index = li * n + j;
-				double up = (li > 0) ? local_grid_old[index - n] : top[j];
-				double down  = (li < local_rows - 1) ? local_grid_old[index + n] : bottom[j];
-				local_grid[index] = (h2 * f(h * i, h * j, k) + up + down + local_grid_old[index - 1] + local_grid_old[index + 1]) / denominator;
-				double diff = std::fabs(local_grid[index] - local_grid_old[index]);
-				max_diff_local = std::max(max_diff_local, diff);
+		if (send_type == 1 or send_type == 2){
+			for (int li = 0; li < local_rows; ++li) {
+				int i = start_row + li;
+				if (i < 1 or i > n - 2) continue;
+				//#pragma omp parallel for
+				for (int j = 1; j < n - 1; ++j) {
+					int index = li * n + j;
+					double up = (li > 0) ? local_grid_old[index - n] : top[j];
+					double down  = (li < local_rows - 1) ? local_grid_old[index + n] : bottom[j];
+					local_grid[index] =
+						(h2 * f(h * i, h * j, k) +
+						up +
+						down +
+						local_grid_old[index - 1] +
+						local_grid_old[index + 1]) / denominator;
+					double diff = std::fabs(local_grid[index] - local_grid_old[index]);
+					max_diff_local = std::max(max_diff_local, diff);
+				}
 			}
 		}
+
 		MPI_Allreduce(&max_diff_local, &global_max_diff, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
 
 		if (global_max_diff < eps) {
 			if (rank == 0)
 				std::cout << "Jacobi converged after " << (iter + 1) << std::endl;
+			if (rank == 0 and send_type == 3) {
+				printf("Non-blocking start: %.2e s, compute_internal: %.2e s, wait: %.2e s\n",
+					t2-t1, t3-t2, t_wait);
+			}
 			return true;
 		}
 		local_grid.swap(local_grid_old);
@@ -152,61 +251,61 @@ bool Jacoby_MPI(
 
 //
 //
-bool Red_and_black_iterations(std::vector<double> &grid, double h, double k, int max_iter){
-	double denominator = (4.0 + k * k * h * h);
-	double h2 = h * h;
-	double max_diff = 0.0;
-
-	for (int iter = 0; iter < max_iter; ++iter ){
-//		#pragma omp parallel for
-		for (int i = 1; i < n - 1; ++i) {
-			int j_start = (i % 2 == 0) ? 2 : 1;
-			for (int j = j_start; j < n - 1; j += 2) {
-				int index = i * n + j;
-				double elem = grid[index];
-				grid[index] =
-					(h2 * f(h * i, h * j, k) +
-					 grid[index + n] +
-					 grid[index - n ] +
-					 grid[index + 1] +
-					 grid[index -1]) / denominator;
-				auto diff = std::fabs(elem - grid[i * n + j]);
-				if (diff > max_diff) {
-//					#pragma omp critical
-					max_diff = std::max(diff, max_diff);
-				}
-			}
-		}
-
-//		#pragma omp parallel for
-		for (int i = 1; i < n - 1; ++i) {
-			int j_start = (i % 2 == 0) ? 1 : 2;
-			for (int j = j_start; j < n - 1; j += 2) {
-				int index = i * n + j;
-				double elem = grid[index];
-				grid[index] =
-					(h2 * f(h * i, h * j, k) +
-					 grid[index + n] +
-					 grid[index - n] +
-					 grid[index + 1] +
-					 grid[index - 1]) / denominator;
-				auto diff = std::fabs(elem - grid[i * n + j]);
-				if (diff > max_diff) {
-//					#pragma omp critical
-					{
-					max_diff = std::max(diff, max_diff);
-					}
-				}
-			}
-		}
-		if (max_diff < eps){
-			std::cout << "Red and black iterations method converged after " << iter << " iterations" << std::endl;
-			return true;
-		}
-		max_diff = 0.0;
-	}
-	return false;
-}
+//bool Red_and_black_iterations(std::vector<double> &grid, double h, double k, int max_iter){
+//	double denominator = (4.0 + k * k * h * h);
+//	double h2 = h * h;
+//	double max_diff = 0.0;
+//
+//	for (int iter = 0; iter < max_iter; ++iter ){
+////		#pragma omp parallel for
+//		for (int i = 1; i < n - 1; ++i) {
+//			int j_start = (i % 2 == 0) ? 2 : 1;
+//			for (int j = j_start; j < n - 1; j += 2) {
+//				int index = i * n + j;
+//				double elem = grid[index];
+//				grid[index] =
+//					(h2 * f(h * i, h * j, k) +
+//					 grid[index + n] +
+//					 grid[index - n ] +
+//					 grid[index + 1] +
+//					 grid[index -1]) / denominator;
+//				auto diff = std::fabs(elem - grid[i * n + j]);
+//				if (diff > max_diff) {
+////					#pragma omp critical
+//					max_diff = std::max(diff, max_diff);
+//				}
+//			}
+//		}
+//
+////		#pragma omp parallel for
+//		for (int i = 1; i < n - 1; ++i) {
+//			int j_start = (i % 2 == 0) ? 1 : 2;
+//			for (int j = j_start; j < n - 1; j += 2) {
+//				int index = i * n + j;
+//				double elem = grid[index];
+//				grid[index] =
+//					(h2 * f(h * i, h * j, k) +
+//					 grid[index + n] +
+//					 grid[index - n] +
+//					 grid[index + 1] +
+//					 grid[index - 1]) / denominator;
+//				auto diff = std::fabs(elem - grid[i * n + j]);
+//				if (diff > max_diff) {
+////					#pragma omp critical
+//					{
+//					max_diff = std::max(diff, max_diff);
+//					}
+//				}
+//			}
+//		}
+//		if (max_diff < eps){
+//			std::cout << "Red and black iterations method converged after " << iter << " iterations" << std::endl;
+//			return true;
+//		}
+//		max_diff = 0.0;
+//	}
+//	return false;
+//}
 
 bool Red_and_black_iterations_MPI(std::vector<double>& local_grid,
 	int local_rows,
@@ -230,7 +329,7 @@ bool Red_and_black_iterations_MPI(std::vector<double>& local_grid,
 	std::vector<double> bottom(n, 0.0);
 
 	MPI_Request req[4];
-	MPI_Status stat[4];
+//	MPI_Status stat[4];
 
 	double max_diff_local = 0.0;
 	double global_max_diff = 0.0;
@@ -239,6 +338,14 @@ bool Red_and_black_iterations_MPI(std::vector<double>& local_grid,
 		max_diff_local = 0.0;
 		const double* my_top_most = local_grid.data(); // первая строка моих данных в local_grid_old
 		const double* my_bottom_most = local_grid.data() + (local_rows - 1) * n; // последняя строка моих данных в local_grid_old
+
+		// Initialize boundary buffers to zero (Dirichlet boundary conditions: u=0 on domain boundaries)
+		if (rank == 0) {
+			std::fill(top.begin(), top.end(), 0.0);
+		}
+		if (rank == size - 1) {
+			std::fill(bottom.begin(), bottom.end(), 0.0);
+		}
 
 		if (send_type == 1){
 			MPI_Send(my_bottom_most,n, MPI_DOUBLE, lower, 0, MPI_COMM_WORLD);
@@ -250,70 +357,154 @@ bool Red_and_black_iterations_MPI(std::vector<double>& local_grid,
 		if (send_type == 2)
 		{
 			MPI_Sendrecv(my_bottom_most, n, MPI_DOUBLE, lower, 0,
-				top.data(),n, MPI_DOUBLE, upper, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+				         top.data(),n, MPI_DOUBLE, upper, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
 
 			MPI_Sendrecv(my_top_most,n, MPI_DOUBLE, upper, 1,
-				bottom.data(),n, MPI_DOUBLE, lower, 1, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+				         bottom.data(),n, MPI_DOUBLE, lower, 1, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
 
 		}
-		else
+		if (send_type == 3)
 		{
+
 			MPI_Isend(my_bottom_most,n, MPI_DOUBLE, lower, 0, MPI_COMM_WORLD, &req[0]);
 			MPI_Irecv(top.data(),n, MPI_DOUBLE, upper, 0, MPI_COMM_WORLD, &req[1]);
 
 			MPI_Isend(my_top_most,n, MPI_DOUBLE, upper, 1, MPI_COMM_WORLD, &req[2]);
 			MPI_Irecv(bottom.data(),n, MPI_DOUBLE, lower, 1, MPI_COMM_WORLD, &req[3]);
 
-			MPI_Waitall(4, req, stat);
-		}
-
-		for (int li = 0; li < local_rows; ++li) {
-			int i = start_row + li;
-			int j_start = (i % 2 == 0) ? 2 : 1;
-			if (i < 1 || i > n - 2) continue;
-			for (int j = j_start; j < n - 1; j += 2) {
-				int index = li * n + j;
-				double elem = local_grid[index];
-				double up = (li > 0) ? local_grid[index - n] : top[j];
-				double down  = (li < local_rows - 1) ? local_grid[index + n] : bottom[j];
-				local_grid[index] =
-					(h2 * f(h * i, h * j, k) +
-						up +
-						down +
-						local_grid[index + 1] +
-						local_grid[index -1]) / denominator;
-				auto diff = std::fabs(elem - local_grid[index]);
-				if (diff > max_diff_local) {
+			for (int li = 1; li < local_rows - 1; ++li) {
+				int i = start_row + li;
+				int j_start = (i % 2 == 0) ? 2 : 1;
+				if (i < 1 or i > n - 2) continue;
+				for (int j = j_start; j < n - 1; j += 2) {
+					int index = li * n + j;
+					double elem = local_grid[index];
+					double up = local_grid[index - n];
+					double down = local_grid[index + n];
+					local_grid[index] =
+						(h2 * f(h * i, h * j, k) +
+						 up +
+						 down +
+						 local_grid[index + 1] +
+						 local_grid[index - 1]) / denominator;
+					auto diff = std::fabs(elem - local_grid[index]);
+					if (diff > max_diff_local) {
 //					#pragma omp critical
-					max_diff_local = std::max(diff, max_diff_local);
-				}
-			}
-		}
-
-		for (int li = 0; li < local_rows; ++li) {
-			int i = start_row + li;
-			int j_start = (i % 2 == 0) ? 1 : 2;
-			if (i < 1 || i > n - 2) continue;
-			for (int j = j_start; j < n - 1; j += 2) {
-				int index = li * n + j;
-				double elem = local_grid[index];
-				double up = (li > 0) ? local_grid[index - n] : top[j];
-				double down  = (li < local_rows - 1) ? local_grid[index + n] : bottom[j];
-				local_grid[index] =
-					(h2 * f(h * i, h * j, k) +
-						up +
-						down +
-						local_grid[index + 1] +
-						local_grid[index - 1]) / denominator;
-				auto diff = std::fabs(elem - local_grid[index]);
-				if (diff > max_diff_local) {
-//					#pragma omp critical
-					{
 						max_diff_local = std::max(diff, max_diff_local);
 					}
 				}
 			}
+
+			for (int li = 1; li < local_rows - 1; ++li) {
+				int i = start_row + li;
+				int j_start = (i % 2 == 0) ? 1 : 2;
+				if (i < 1 or i > n - 2) continue;
+				for (int j = j_start; j < n - 1; j += 2) {
+					int index = li * n + j;
+					double elem = local_grid[index];
+					double up = local_grid[index - n];
+					double down = local_grid[index + n] ;
+					local_grid[index] =
+						(h2 * f(h * i, h * j, k) +
+						 up +
+						 down +
+						 local_grid[index + 1] +
+						 local_grid[index - 1]) / denominator;
+					auto diff = std::fabs(elem - local_grid[index]);
+					if (diff > max_diff_local) {
+//					#pragma omp critical
+						{
+							max_diff_local = std::max(diff, max_diff_local);
+						}
+					}
+				}
+			}
+
+			MPI_Waitall(4, req, MPI_STATUS_IGNORE);
+
+			int li = 0; int i = start_row + li;
+			if (i != 0 ) {
+				for (int j = 1; j < n - 1; ++j) {
+					int index = li * n + j;
+					double elem = local_grid[index];
+					double up = top[j];
+					double down = local_grid[index + n];
+					local_grid[index] =
+						(h2 * f(h * i, h * j, k) + up + down + local_grid[index + 1] + local_grid[index - 1]) /
+						denominator;
+					double diff = std::fabs(elem - local_grid[index]);
+					max_diff_local = std::max(diff, max_diff_local);
+				}
+			}
+			li = local_rows - 1; i = start_row + li;
+			if (i != n-1) {
+				for (int j = 1; j < n - 1; ++ j) {
+					int index = li * n + j;
+					double elem = local_grid[index];
+					double up =  local_grid[index - n];
+					double down = bottom[j];
+					local_grid[index] =
+						(h2 * f(h * i, h * j, k) +
+						up +
+						down +
+						local_grid[index + 1] +
+						local_grid[index - 1]) / denominator;
+					double diff = std::fabs(elem - local_grid[index]);
+					max_diff_local = std::max(diff, max_diff_local);
+				}
+			}
+
 		}
+		if (send_type == 1 or send_type == 2) {
+			for (int li = 0; li < local_rows; ++li) {
+				int i = start_row + li;
+				int j_start = (i % 2 == 0) ? 2 : 1;
+				if (i < 1 or i > n - 2) continue;
+				for (int j = j_start; j < n - 1; j += 2) {
+					int index = li * n + j;
+					double elem = local_grid[index];
+					double up = (li > 0) ? local_grid[index - n] : top[j];
+					double down = (li < local_rows - 1) ? local_grid[index + n] : bottom[j];
+					local_grid[index] =
+						(h2 * f(h * i, h * j, k) +
+						 up +
+						 down +
+						 local_grid[index + 1] +
+						 local_grid[index - 1]) / denominator;
+					auto diff = std::fabs(elem - local_grid[index]);
+					if (diff > max_diff_local) {
+//					#pragma omp critical
+						max_diff_local = std::max(diff, max_diff_local);
+					}
+				}
+			}
+
+			for (int li = 0; li < local_rows; ++li) {
+				int i = start_row + li;
+				int j_start = (i % 2 == 0) ? 1 : 2;
+				if (i < 1 or i > n - 2) continue;
+				for (int j = j_start; j < n - 1; j += 2) {
+					int index = li * n + j;
+					double elem = local_grid[index];
+					double up = (li > 0) ? local_grid[index - n] : top[j];
+					double down = (li < local_rows - 1) ? local_grid[index + n] : bottom[j];
+					local_grid[index] =
+						(h2 * f(h * i, h * j, k) +
+						 up +
+						 down +
+						 local_grid[index + 1] +
+						 local_grid[index - 1]) / denominator;
+					auto diff = std::fabs(elem - local_grid[index]);
+					if (diff > max_diff_local) {
+//					#pragma omp critical
+						{
+							max_diff_local = std::max(diff, max_diff_local);
+						}
+					}
+				}
+			}
+		}
+
 		MPI_Allreduce(&max_diff_local, &global_max_diff, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
 
 		if (global_max_diff < eps) {
@@ -337,8 +528,9 @@ int main(int argc, char** argv)
 
 	MPI_Comm_size(MPI_COMM_WORLD, &size);
 	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-	double h = 1.0 / n;
-	double k = 1.0 / h;
+	double h = 1.0 / (n-1);
+	double k = 2800;
+//	double k = 10.0;
 	if (rank == 0) {
 		std::cout << "Number of nodes = " << size << std::endl;
 		std::cout << "k = " << k << std::endl;
@@ -347,14 +539,25 @@ int main(int argc, char** argv)
 	}
 
 	int local_rows = n / size;
+	int leftover = n % size;
 	int start_row = rank * local_rows;
 
+	std::vector<int> counts(size), displs(size);
+	for (int i = 0; i < size; ++i) {
+		counts[i] = (i < leftover ? local_rows + 1 : local_rows) * n;
+		displs[i] = (i > 0) ? displs[i-1] + counts[i-1] : 0;
+	}
+
+	local_rows = (rank < leftover) ? (local_rows + 1) : local_rows;
+	start_row = rank * local_rows + std::min(rank, leftover);
 	if (rank == 0) {
 		std::cout << "Jacoby Send + Recv" << std::endl;
 	}
 	std::vector<double> grid_jac_1(n * n, 0.0);
 	std::vector<double> local_grid_jac_1(local_rows * n, 0.0);
 	std::vector<double> local_grid_old_1 = local_grid_jac_1;
+	init_boundaries(local_grid_jac_1, local_rows, start_row, n);
+	init_boundaries(local_grid_old_1, local_rows, start_row, n);
 	auto time_jacoby = -omp_get_wtime();
 	bool jacoby_flag = Jacoby_MPI(local_grid_jac_1,
 		local_grid_old_1,
@@ -368,14 +571,30 @@ int main(int argc, char** argv)
 		rank,
 		size,
 		1);
-	MPI_Gather(local_grid_jac_1.data(), local_rows * n, MPI_DOUBLE,
-		grid_jac_1.data(), local_rows * n, MPI_DOUBLE,
+
+	MPI_Gatherv(local_grid_jac_1.data(), local_rows * n, MPI_DOUBLE,
+		grid_jac_1.data(), counts.data(), displs.data(), MPI_DOUBLE,
 		0, MPI_COMM_WORLD);
 	time_jacoby += +omp_get_wtime();
 
 	if (rank == 0 and jacoby_flag) {
-		std::cout << "Jacoby error = " << calculate_error(grid_jac_1, sol, h) << std::endl;
-		std::cout << "Jacoby time = " << time_jacoby << std::endl << std::endl;
+		std::cout << "error = " << calculate_error(grid_jac_1, sol, h) << std::endl;
+		std::cout << "time = " << time_jacoby << std::endl << std::endl;
+//		std::cout << "speedup = " << 24.9837/time_jacoby << std::endl << std::endl;
+        // Write result to file
+        std::ofstream result_file("results_6.txt", std::ios::app);
+        if (result_file.is_open()) {
+            for (int i = 0; i < n; ++i) {
+                for (int j = 0; j < n; ++j) {
+                    result_file << grid_jac_1[i * n + j] << ' ';
+                }
+                result_file << '\n';
+            }
+            result_file << "\n";
+            result_file.close();
+        } else {
+            std::cerr << "Unable to open results.txt for writing." << std::endl;
+        }
 	}
 
 	if (rank == 0) {
@@ -385,6 +604,8 @@ int main(int argc, char** argv)
 	std::vector<double> grid_jac_2(n * n, 0.0);
 	std::vector<double> local_grid_jac_2(local_rows * n, 0.0);
 	std::vector<double> local_grid_old_2 = local_grid_jac_2;
+	init_boundaries(local_grid_jac_2, local_rows, start_row, n);
+	init_boundaries(local_grid_old_2, local_rows, start_row, n);
 	time_jacoby = -omp_get_wtime();
 	jacoby_flag = Jacoby_MPI(local_grid_jac_2,
 		local_grid_old_2,
@@ -398,14 +619,15 @@ int main(int argc, char** argv)
 		rank,
 		size,
 		2);
-	MPI_Gather(local_grid_jac_2.data(), local_rows * n, MPI_DOUBLE,
-		grid_jac_2.data(), local_rows * n, MPI_DOUBLE,
+	MPI_Gatherv(local_grid_jac_2.data(), local_rows * n, MPI_DOUBLE,
+		grid_jac_2.data(), counts.data(), displs.data(), MPI_DOUBLE,
 		0, MPI_COMM_WORLD);
 	time_jacoby += +omp_get_wtime();
 
 	if (rank == 0 and jacoby_flag) {
-		std::cout << "Jacoby error = " << calculate_error(grid_jac_2, sol, h) << std::endl;
-		std::cout << "Jacoby time = " << time_jacoby << std::endl << std::endl;
+		std::cout << "error = " << calculate_error(grid_jac_2, sol, h) << std::endl;
+		std::cout << "time = " << time_jacoby << std::endl << std::endl;
+//		std::cout << "speedup = " << 24.9913/time_jacoby << std::endl << std::endl;
 	}
 
 	if (rank == 0) {
@@ -414,6 +636,8 @@ int main(int argc, char** argv)
 	std::vector<double> grid_jac_3(n * n, 0.0);
 	std::vector<double> local_grid_jac_3(local_rows * n, 0.0);
 	std::vector<double> local_grid_old_3 = local_grid_jac_3;
+	init_boundaries(local_grid_jac_3, local_rows, start_row, n);
+	init_boundaries(local_grid_old_3, local_rows, start_row, n);
 	time_jacoby = -omp_get_wtime();
 	jacoby_flag = Jacoby_MPI(local_grid_jac_3,
 		local_grid_old_3,
@@ -427,14 +651,15 @@ int main(int argc, char** argv)
 		rank,
 		size,
 		3);
-	MPI_Gather(local_grid_jac_3.data(), local_rows * n, MPI_DOUBLE,
-		grid_jac_3.data(), local_rows * n, MPI_DOUBLE,
+	MPI_Gatherv(local_grid_jac_3.data(), local_rows * n, MPI_DOUBLE,
+		grid_jac_3.data(), counts.data(), displs.data(), MPI_DOUBLE,
 		0, MPI_COMM_WORLD);
 	time_jacoby += +omp_get_wtime();
 
 	if (rank == 0 and jacoby_flag) {
-		std::cout << "Jacoby error = " << calculate_error(grid_jac_3, sol, h) << std::endl;
-		std::cout << "Jacoby time = " << time_jacoby << std::endl << std::endl;
+		std::cout << "error = " << calculate_error(grid_jac_3, sol, h) << std::endl;
+		std::cout << "time = " << time_jacoby << std::endl << std::endl;
+//		std::cout << "speedup = " << 25.0198/time_jacoby << std::endl << std::endl;
 	}
 
 	if (rank == 0) {
@@ -443,6 +668,7 @@ int main(int argc, char** argv)
 	std::vector<double> grid_rb_1(n * n, 0.0);
 
 	std::vector<double> local_grid_rb_1(local_rows * n, 0.0);
+	init_boundaries(local_grid_rb_1, local_rows, start_row, n);
 	auto time_rb = -omp_get_wtime();
 	bool rb_flag = Red_and_black_iterations_MPI(local_grid_rb_1,
 		local_rows,
@@ -455,14 +681,15 @@ int main(int argc, char** argv)
 		rank,
 		size,
 		1);
-	MPI_Gather(local_grid_rb_1.data(), local_rows * n, MPI_DOUBLE,
-		grid_rb_1.data(), local_rows * n, MPI_DOUBLE,
+	MPI_Gatherv(local_grid_rb_1.data(), local_rows * n, MPI_DOUBLE,
+		grid_rb_1.data(), counts.data(), displs.data(), MPI_DOUBLE,
 		0, MPI_COMM_WORLD);
 	time_rb += +omp_get_wtime();
 
 	if (rank == 0 and rb_flag) {
-		std::cout << "Red and black iterations error = " << calculate_error(grid_rb_1, sol, h) << std::endl;
-		std::cout << "Red and black iterations time = " << time_rb << std::endl << std::endl;
+		std::cout << "error = " << calculate_error(grid_rb_1, sol, h) << std::endl;
+		std::cout << "time = " << time_rb << std::endl << std::endl;
+//		std::cout << "speedup = " << 14.4932/time_rb << std::endl << std::endl;
 	}
 
 	if (rank == 0) {
@@ -470,6 +697,7 @@ int main(int argc, char** argv)
 	}
 	std::vector<double> grid_rb_2(n * n, 0.0);
 	std::vector<double> local_grid_rb_2(local_rows * n, 0.0);
+	init_boundaries(local_grid_rb_2, local_rows, start_row, n);
 	time_rb = -omp_get_wtime();
 	rb_flag = Red_and_black_iterations_MPI(local_grid_rb_2,
 		local_rows,
@@ -482,14 +710,16 @@ int main(int argc, char** argv)
 		rank,
 		size,
 		2);
-	MPI_Gather(local_grid_rb_2.data(), local_rows * n, MPI_DOUBLE,
-		grid_rb_2.data(), local_rows * n, MPI_DOUBLE,
+
+	MPI_Gatherv(local_grid_rb_2.data(), local_rows * n, MPI_DOUBLE,
+		grid_rb_2.data(), counts.data(), displs.data(), MPI_DOUBLE,
 		0, MPI_COMM_WORLD);
 	time_rb += +omp_get_wtime();
 
 	if (rank == 0 and rb_flag) {
-		std::cout << "Red and black iterations error = " << calculate_error(grid_rb_2, sol, h) << std::endl;
-		std::cout << "Red and black iterations time = " << time_rb << std::endl << std::endl;
+		std::cout << "error = " << calculate_error(grid_rb_2, sol, h) << std::endl;
+		std::cout << "time = " << time_rb << std::endl << std::endl;
+//		std::cout << "speedup = " << 14.4877/time_rb << std::endl << std::endl;
 	}
 
 	if (rank == 0) {
@@ -497,6 +727,7 @@ int main(int argc, char** argv)
 	}
 	std::vector<double> grid_rb_3(n * n, 0.0);
 	std::vector<double> local_grid_rb_3(local_rows * n, 0.0);
+	init_boundaries(local_grid_rb_3, local_rows, start_row, n);
 	time_rb = -omp_get_wtime();
 	rb_flag = Red_and_black_iterations_MPI(local_grid_rb_3,
 		local_rows,
@@ -509,55 +740,17 @@ int main(int argc, char** argv)
 		rank,
 		size,
 		3);
-	MPI_Gather(local_grid_rb_3.data(), local_rows * n, MPI_DOUBLE,
-		grid_rb_3.data(), local_rows * n, MPI_DOUBLE,
+	MPI_Gatherv(local_grid_rb_3.data(), local_rows * n, MPI_DOUBLE,
+		grid_rb_3.data(), counts.data(), displs.data(), MPI_DOUBLE,
 		0, MPI_COMM_WORLD);
 	time_rb += +omp_get_wtime();
 
+
 	if (rank == 0 and rb_flag) {
-		std::cout << "Red and black iterations error = " << calculate_error(grid_rb_3, sol, h) << std::endl;
-		std::cout << "Red and black iterations time = " << time_rb << std::endl << std::endl;
+		std::cout << "error = " << calculate_error(grid_rb_3, sol, h) << std::endl;
+		std::cout << "time = " << time_rb << std::endl << std::endl;
+//		std::cout << "speedup = " << 13.631/time_rb << std::endl << std::endl;
 	}
-	//	auto time_jacoby = -omp_get_wtime();
-//	bool jacoby_flag = Jacoby(grid_jac_3, h, 1, 100000);
-//	time_jacoby += +omp_get_wtime();
-//	if (jacoby_flag){
-//		std::cout << "Jacoby error = " << calculate_error(grid_jac_3, sol, h) << std::endl;
-//		std::cout << "Jacoby time = " << time_jacoby << std::endl;
-//	}
-//	std::vector<double> grid_2(n*n, 0.0);
-//	auto time_rb = -omp_get_wtime();
-//	bool rb_flag = Red_and_black_iterations(grid_2, h, 1, 100000);
-//	time_rb += omp_get_wtime();
-//	if (rb_flag){
-//		std::cout << "Red and black iterations method error = " << calculate_error(grid_2, sol, h) << std::endl;
-//		std::cout << "Red and black iterations time = " << time_rb << std::endl;
-//	}
-//	std::cout << std::endl;
-//
-//	std::vector<double> grid_one(n*n, 0.0);
-//
-//	omp_set_num_threads(1);
-//	auto time_jacoby_one = -omp_get_wtime();
-//	bool jacoby_flag_one = Jacoby(grid_one, h, 1, 100000);
-//	time_jacoby_one += +omp_get_wtime();
-//	if (jacoby_flag_one){
-//		std::cout << "Jacoby error = " << calculate_error(grid_one, sol, h) << std::endl;
-//		std::cout << "Jacoby time = " << time_jacoby_one << std::endl;
-//
-//	}
-//	std::vector<double> grid_2_one(n*n, 0.0);
-//	auto time_rb_one = -omp_get_wtime();
-//	bool rb_flag_one = Red_and_black_iterations(grid_2_one, h, 1, 100000);
-//	time_rb_one += omp_get_wtime();
-//	if (rb_flag_one){
-//		std::cout << "Red and black iterations method error = " << calculate_error(grid_2_one, sol, h) << std::endl;
-//		std::cout << "Red and black iterations time = " << time_rb_one << std::endl;
-//	}
-//
-//	std::cout << std::endl;
-//	std::cout << "Speedup Jacoby = " << time_jacoby_one/time_jacoby << std::endl;
-//	std::cout << "Speedup Red and black iterations = " << time_rb_one/time_rb << std::endl;
 
 	MPI_Finalize();
 	return 0;
