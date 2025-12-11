@@ -6,7 +6,7 @@
 #include <algorithm>
 #include <fstream>
 
-int n = 101;
+int n = 20001;
 double eps = 1e-8;
 
 
@@ -529,7 +529,7 @@ int main(int argc, char** argv)
 	MPI_Comm_size(MPI_COMM_WORLD, &size);
 	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 	double h = 1.0 / (n-1);
-	double k = 2800;
+	double k = 1.0/h;
 //	double k = 10.0;
 	if (rank == 0) {
 		std::cout << "Number of nodes = " << size << std::endl;
@@ -538,18 +538,19 @@ int main(int argc, char** argv)
 		std::cout << "Tolerance = " << eps << std::endl;
 	}
 
-	int local_rows = n / size;
-	int leftover = n % size;
-	int start_row = rank * local_rows;
+	int base_rows = n / size;
+	int leftover  = n % size;
 
 	std::vector<int> counts(size), displs(size);
+	displs[0] = 0;
 	for (int i = 0; i < size; ++i) {
-		counts[i] = (i < leftover ? local_rows + 1 : local_rows) * n;
-		displs[i] = (i > 0) ? displs[i-1] + counts[i-1] : 0;
+		int rows_i = (i < leftover) ? base_rows + 1 : base_rows;
+		counts[i] = rows_i * n;
+		if (i > 0) displs[i] = displs[i-1] + counts[i-1];
 	}
 
-	local_rows = (rank < leftover) ? (local_rows + 1) : local_rows;
-	start_row = rank * local_rows + std::min(rank, leftover);
+	int local_rows = counts[rank] / n;
+	int start_row  = displs[rank] / n;
 	if (rank == 0) {
 		std::cout << "Jacoby Send + Recv" << std::endl;
 	}
@@ -582,19 +583,6 @@ int main(int argc, char** argv)
 		std::cout << "time = " << time_jacoby << std::endl << std::endl;
 //		std::cout << "speedup = " << 24.9837/time_jacoby << std::endl << std::endl;
         // Write result to file
-        std::ofstream result_file("results_6.txt", std::ios::app);
-        if (result_file.is_open()) {
-            for (int i = 0; i < n; ++i) {
-                for (int j = 0; j < n; ++j) {
-                    result_file << grid_jac_1[i * n + j] << ' ';
-                }
-                result_file << '\n';
-            }
-            result_file << "\n";
-            result_file.close();
-        } else {
-            std::cerr << "Unable to open results.txt for writing." << std::endl;
-        }
 	}
 
 	if (rank == 0) {
@@ -659,7 +647,7 @@ int main(int argc, char** argv)
 	if (rank == 0 and jacoby_flag) {
 		std::cout << "error = " << calculate_error(grid_jac_3, sol, h) << std::endl;
 		std::cout << "time = " << time_jacoby << std::endl << std::endl;
-//		std::cout << "speedup = " << 25.0198/time_jacoby << std::endl << std::endl;
+		std::cout << "speedup = " << 265.056/time_jacoby << std::endl << std::endl;
 	}
 
 	if (rank == 0) {
@@ -749,7 +737,7 @@ int main(int argc, char** argv)
 	if (rank == 0 and rb_flag) {
 		std::cout << "error = " << calculate_error(grid_rb_3, sol, h) << std::endl;
 		std::cout << "time = " << time_rb << std::endl << std::endl;
-//		std::cout << "speedup = " << 13.631/time_rb << std::endl << std::endl;
+		std::cout << "speedup = " << 151.339/time_rb << std::endl << std::endl;
 	}
 
 	MPI_Finalize();
