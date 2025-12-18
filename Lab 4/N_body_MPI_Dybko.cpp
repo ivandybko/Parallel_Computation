@@ -136,7 +136,8 @@ void compute_acceleration_local(std::vector<Body>& bodies, int start, int end) {
 	}
 }
 
-void runge_kutta_4_step(std::vector<Body>& bodies, double tau, int start, int end, MPI_Comm comm, std::vector<int> &counts, std::vector<int> &displs) {
+void runge_kutta_4_step(std::vector<Body>& bodies, double tau, int start, int end,
+						MPI_Comm comm, std::vector<int> &counts,std::vector<int> &displs, MPI_Datatype MPI_BODY_XYZ) {
 	int n = bodies.size();
 
 	compute_acceleration_local(bodies, start, end);
@@ -147,18 +148,20 @@ void runge_kutta_4_step(std::vector<Body>& bodies, double tau, int start, int en
 	std::vector<Body> k4 = bodies;
 
 	time_copy += omp_get_wtime();
-
+	// std::cout << bodies[3].r[0] << " " << bodies[3].r[1] << " " << bodies[3].r[2] << std::endl;
+	MPI_Barrier(comm);
 	time_k2 -= omp_get_wtime();
-
 	#pragma omp parallel for collapse(2)
-	for (int i = 0; i < n; ++i)
+	for (int i = start; i < end; ++i)
 		for (int d = 0; d < 3; ++d) {
 			k2[i].r[d] = bodies[i].r[d] + 0.5 * tau * bodies[i].v[d];
 			k2[i].v[d] = bodies[i].v[d] + 0.5 * tau * bodies[i].a[d];
 		}
-
+	MPI_Allgatherv(MPI_IN_PLACE, 0, MPI_DATATYPE_NULL,
+		   k2.data(), counts.data(), displs.data(),
+		   MPI_BODY_XYZ, MPI_COMM_WORLD);
 	time_k2 += omp_get_wtime();
-
+	// std::cout << k2[3].r[0] << " " << k2[3].r[1] << " " << k2[3].r[2] << std::endl;
 	time_a -= omp_get_wtime();
 
 	compute_acceleration_local(k2, start, end);
@@ -168,12 +171,14 @@ void runge_kutta_4_step(std::vector<Body>& bodies, double tau, int start, int en
 	time_k3 -= omp_get_wtime();
 
 	#pragma omp parallel for collapse(2)
-	for (int i = 0; i < n; ++i)
+	for (int i = start; i < end; ++i)
 		for (int d = 0; d < 3; ++d) {
 			k3[i].r[d] = bodies[i].r[d] + 0.5 * tau * k2[i].v[d];
 			k3[i].v[d] = bodies[i].v[d] + 0.5 * tau * k2[i].a[d];
 		}
-
+	MPI_Allgatherv(MPI_IN_PLACE, 0, MPI_DATATYPE_NULL,
+		   k3.data(), counts.data(), displs.data(),
+		   MPI_BODY_XYZ, MPI_COMM_WORLD);
 
 	time_k3 += omp_get_wtime();
 
@@ -186,13 +191,15 @@ void runge_kutta_4_step(std::vector<Body>& bodies, double tau, int start, int en
 	time_k4 -= omp_get_wtime();
 
 	#pragma omp parallel for collapse(2)
-	for (int i = 0; i < n; ++i) {
+	for (int i = start; i < end; ++i) {
 		for (int d = 0; d < 3; ++d) {
 			k4[i].r[d] = bodies[i].r[d] + tau * k3[i].v[d];
 			k4[i].v[d] = bodies[i].v[d] + tau * k3[i].a[d];
 		}
 	}
-
+	MPI_Allgatherv(MPI_IN_PLACE, 0, MPI_DATATYPE_NULL,
+		   k4.data(), counts.data(), displs.data(),
+		   MPI_BODY_XYZ, MPI_COMM_WORLD);
 	time_k4 += omp_get_wtime();
 
 	time_a -= omp_get_wtime();
@@ -203,7 +210,7 @@ void runge_kutta_4_step(std::vector<Body>& bodies, double tau, int start, int en
 
 	time_cycle -= omp_get_wtime();
 	#pragma omp parallel for collapse(2)
-	for (int i = 0; i < n; ++i)
+	for (int i = start; i < end; ++i)
 		for (int d = 0; d < 3; ++d) {
 			double v1 = bodies[i].v[d];
 			double v2 = k2[i].v[d];
@@ -219,9 +226,7 @@ void runge_kutta_4_step(std::vector<Body>& bodies, double tau, int start, int en
 			bodies[i].v[d] += (tau / 6.0) * (a1 + 2.0 * a2 + 2.0 * a3 + a4);
 		}
 	time_cycle += omp_get_wtime();
-	MPI_Allgatherv(MPI_IN_PLACE, 0, MPI_DATATYPE_NULL,
-				   bodies.data(), counts.data(), displs.data(),
-				   MPI_BYTE, comm);
+
 }
 
 int main(int argc, char** argv)
@@ -231,25 +236,69 @@ int main(int argc, char** argv)
 	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 	MPI_Comm_size(MPI_COMM_WORLD, &size);
 
-	MPI_Datatype MPI_BODY;
-	MPI_Type_contiguous(10, MPI_DOUBLE, &MPI_BODY);
-	MPI_Type_commit(&MPI_BODY);
+	MPI_Datatype MPI_BODY_M_XYZ_V, MPI_BODY_V_A, MPI_BODY_XYZ;
+	{
+		MPI_Datatype tmp;
+		int count = 3;
+		int lengths[] = {1, 3, 3};
+		MPI_Aint disps[] = {offsetof(Body, m), offsetof(Body, r), offsetof(Body, v)};
+		MPI_Datatype types[] = {MPI_DOUBLE, MPI_DOUBLE, MPI_DOUBLE};
+		MPI_Type_create_struct(count, lengths, disps, types, &tmp);
 
-	bool random{false};
+		MPI_Type_create_resized(tmp, 0, sizeof(Body), &MPI_BODY_M_XYZ_V);
+		MPI_Type_commit(&MPI_BODY_M_XYZ_V);
+		MPI_Type_free(&tmp);
+	}
+	{
+		MPI_Datatype tmp;
+		int count = 2;
+		int lengths[] = {3, 3};
+		MPI_Aint disps[] = {offsetof(Body, v), offsetof(Body, a)};
+		MPI_Datatype types[] = {MPI_DOUBLE, MPI_DOUBLE};
+		MPI_Type_create_struct(count, lengths, disps, types, &tmp);
+
+		MPI_Type_create_resized(tmp, 0, sizeof(Body), &MPI_BODY_V_A);
+		MPI_Type_commit(&MPI_BODY_V_A);
+		MPI_Type_free(&tmp);
+	}
+	{
+		MPI_Datatype tmp;
+		int count = 1;
+		int lengths[] = {3};
+		MPI_Aint disps[] = {offsetof(Body, r)};
+		MPI_Datatype types[] = {MPI_DOUBLE};
+		MPI_Type_create_struct(count, lengths, disps, types, &tmp);
+
+		MPI_Type_create_resized(tmp, 0, sizeof(Body), &MPI_BODY_XYZ);
+		MPI_Type_commit(&MPI_BODY_XYZ);
+		MPI_Type_free(&tmp);
+	}
+
+	bool random{true};
 	std::vector<Body> bodies;
 	if (random){
 		int N = 10'000;
-		int batch = N / size;
-		int leftover = N % size;
-		int start = rank * batch + std::min(rank, leftover);
-		int end = start + batch + (rank < leftover ? 1 : 0);
+		bodies.resize(N);
 		if (rank == 0)
 		{
 			bodies = generate_random_bodies(N);
 			std::cout << "Number of bodies = " << N << std::endl;
 		}
-		MPI_Bcast(bodies.data(), N, MPI_BODY, 0, MPI_COMM_WORLD);
 
+		MPI_Bcast(bodies.data(), N, MPI_BODY_M_XYZ_V, 0, MPI_COMM_WORLD);
+
+		int batch = N / size;
+		int leftover = N % size;
+		int start = rank * batch + std::min(rank, leftover);
+		int end = start + batch + (rank < leftover ? 1 : 0);
+
+		std::vector<int> counts(size, 0.0), displs(size, 0.0);
+		int off = 0;
+		for (int i = 0; i < size; ++i) {
+			counts[i] = batch + (i < leftover ? 1 : 0);
+			displs[i] = off;
+			off += counts[i];
+		}
 
 		double t = 0.0, tau = 0.01/4.0;
 		int num_steps = 40;
@@ -261,34 +310,33 @@ int main(int argc, char** argv)
 		time_k4= 0;
 		time_a = 0;
 		time_cycle = 0;
-		std::vector<int> counts(size, 0.0), displs(size, 0.0);
-		int off = 0;
-		for (int i = 0; i < size; ++i) {
-			counts[i] = batch + (i < leftover ? 1 : 0);
-			displs[i] = off;
-			off += counts[i];
-		}
-		for (int i = 0; i < size; ++i) counts[i] *= sizeof(Body);
-		for (int i = 0; i < size; ++i) displs[i] *= sizeof(Body);
+
 		auto time_rk = -omp_get_wtime();
 
 		for (int step = 0; step < num_steps; ++step) {
-			runge_kutta_4_step(bodies, tau, start, end, MPI_COMM_WORLD, counts, displs);
+			runge_kutta_4_step(bodies, tau, start, end, MPI_COMM_WORLD, counts, displs, MPI_BODY_XYZ);
+
+			MPI_Allgatherv(MPI_IN_PLACE, counts[rank],MPI_BODY_XYZ,	bodies.data(),counts.data(),displs.data(),MPI_BODY_XYZ, MPI_COMM_WORLD);
 			t += tau;
 		}
+		MPI_Allgatherv(MPI_IN_PLACE, 0, MPI_DATATYPE_NULL,
+				bodies.data(), counts.data(), displs.data(),
+				MPI_BODY_V_A, MPI_COMM_WORLD);
 		time_rk += omp_get_wtime();
+		if (rank == 0)
+		{
+			std::cout << "Time of copying = " << time_copy << std::endl;
+			std::cout << "Time of k2 = " << time_k2/num_steps << std::endl;
+			std::cout << "Time of k3 = " << time_k3/num_steps << std::endl;
+			std::cout << "Time of k4 = " << time_k4/num_steps << std::endl;
+			std::cout << "Time of a = " << time_a/num_steps << std::endl;
+			std::cout << "Time of cycle = " << time_cycle/num_steps << std::endl;
 
-		std::cout << "Time of copying = " << time_copy << std::endl;
-		std::cout << "Time of k2 = " << time_k2/num_steps << std::endl;
-		std::cout << "Time of k3 = " << time_k3/num_steps << std::endl;
-		std::cout << "Time of k4 = " << time_k4/num_steps << std::endl;
-		std::cout << "Time of a = " << time_a/num_steps << std::endl;
-		std::cout << "Time of cycle = " << time_cycle/num_steps << std::endl;
 
-
-		std::cout << "Time of calculation = " << time_rk/num_steps << std::endl;
-		std::cout << std::endl;
-
+			std::cout << "Time of calculation = " << time_rk/num_steps << std::endl;
+			std::cout << "speed up = " << 0.802574 / (time_rk/num_steps)  << std::endl;
+			std::cout << std::endl;
+		}
 	}
 	else {
 		std::vector<std::ofstream> files;
@@ -307,7 +355,7 @@ int main(int argc, char** argv)
 		{
 			bodies.resize(N);
 		}
-		MPI_Bcast(bodies.data(), N, MPI_BODY, 0, MPI_COMM_WORLD);
+		MPI_Bcast(bodies.data(), N, MPI_BODY_M_XYZ_V, 0, MPI_COMM_WORLD);
 
 		int batch = N / size;
 		int leftover = N % size;
@@ -321,21 +369,38 @@ int main(int argc, char** argv)
 			displs[i] = off;
 			off += counts[i];
 		}
-		for (int i = 0; i < size; ++i) counts[i] *= sizeof(Body);
-		for (int i = 0; i < size; ++i) displs[i] *= sizeof(Body);
 
-		double t = 0.0, tau = 0.01/8.0;
-		int num_steps = 20.0 / tau + 1 ;
+		double t = 0.0, tau = 0.01/8;
+		int num_steps = 20.0 / tau ;
 		int output_every = int(0.1 / tau);
+
 		for (int step = 0; step < num_steps; ++step) {
-			if (rank == 0)
-			{
-				if (step % output_every < 1e-6){
+			// if (rank == 0)
+			// {
+			// 	if (step % output_every < 1e-6){
+			// 		write_positions(t, bodies, files);
+			// 	}
+			// }
+			if (step % output_every < 1e-6){
+				MPI_Allgatherv(MPI_IN_PLACE, 0, MPI_DATATYPE_NULL,
+								bodies.data(), counts.data(), displs.data(),
+								MPI_BODY_V_A, MPI_COMM_WORLD);
+				MPI_Barrier(MPI_COMM_WORLD);
+				if (rank == 0)
 					write_positions(t, bodies, files);
-				}
 			}
-			runge_kutta_4_step(bodies, tau, start, end, MPI_COMM_WORLD, counts, displs);
+			runge_kutta_4_step(bodies, tau, start, end, MPI_COMM_WORLD, counts, displs, MPI_BODY_XYZ);
+
+			MPI_Allgatherv(MPI_IN_PLACE, counts[rank],MPI_BODY_XYZ,	bodies.data(),counts.data(),displs.data(),MPI_BODY_XYZ, MPI_COMM_WORLD);
+
 			t += tau;
+		}
+		MPI_Allgatherv(MPI_IN_PLACE, 0, MPI_DATATYPE_NULL,
+		   bodies.data(), counts.data(), displs.data(),
+		   MPI_BODY_V_A, MPI_COMM_WORLD);
+		if (rank == 0)
+		{
+			write_positions(t, bodies, files);
 		}
 
 	}
