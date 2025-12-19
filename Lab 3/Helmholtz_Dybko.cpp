@@ -85,12 +85,14 @@ bool Jacoby_MPI(
 
 	const double* my_top_most = local_grid_old.data(); // первая строка моих данных в local_grid_old
 	const double* my_bottom_most = local_grid_old.data() + (local_rows - 1) * n; // последняя строка моих данных в local_grid_old
+	if (send_type == 3)
+	{
+		MPI_Send_init(my_bottom_most,n, MPI_DOUBLE, lower, 0, MPI_COMM_WORLD, &req[0]);
+		MPI_Recv_init(top.data(),n, MPI_DOUBLE, upper, 0, MPI_COMM_WORLD, &req[1]);
 
-	MPI_Send_init(my_bottom_most,n, MPI_DOUBLE, lower, 0, MPI_COMM_WORLD, &req[0]);
-	MPI_Recv_init(top.data(),n, MPI_DOUBLE, upper, 0, MPI_COMM_WORLD, &req[1]);
-
-	MPI_Send_init(my_top_most,n, MPI_DOUBLE, upper, 1, MPI_COMM_WORLD, &req[2]);
-	MPI_Recv_init(bottom.data(),n, MPI_DOUBLE, lower, 1, MPI_COMM_WORLD, &req[3]);
+		MPI_Send_init(my_top_most,n, MPI_DOUBLE, upper, 1, MPI_COMM_WORLD, &req[2]);
+		MPI_Recv_init(bottom.data(),n, MPI_DOUBLE, lower, 1, MPI_COMM_WORLD, &req[3]);
+	}
 
 	for (int iter = 0; iter < max_iter; ++iter) {
 		max_diff_local = 0.0;
