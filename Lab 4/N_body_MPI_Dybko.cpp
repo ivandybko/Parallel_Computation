@@ -24,7 +24,6 @@ struct Body{
 	double r[3] = {0.0, 0.0, 0.0};
 	double v[3] = {0.0, 0.0, 0.0};
 	double a[3] = {0.0, 0.0, 0.0};
-
 };
 
 void read_data(const std::string& filename, std::vector<Body>& bodies)
@@ -136,20 +135,15 @@ void compute_acceleration_local(std::vector<Body>& bodies, int start, int end) {
 	}
 }
 
-void runge_kutta_4_step(std::vector<Body>& bodies, double tau, int start, int end,
+void runge_kutta_4_step(std::vector<Body>& bodies,	std::vector<Body>& k2, std::vector<Body>& k3, std::vector<Body>& k4, double tau, int start, int end,
 						MPI_Comm comm, std::vector<int> &counts,std::vector<int> &displs, MPI_Datatype MPI_BODY_XYZ) {
 	int n = bodies.size();
 
 	compute_acceleration_local(bodies, start, end);
 
 	time_copy -= omp_get_wtime();
-	std::vector<Body> k2 = bodies;
-	std::vector<Body> k3 = bodies;
-	std::vector<Body> k4 = bodies;
 
 	time_copy += omp_get_wtime();
-	// std::cout << bodies[3].r[0] << " " << bodies[3].r[1] << " " << bodies[3].r[2] << std::endl;
-	MPI_Barrier(comm);
 	time_k2 -= omp_get_wtime();
 	#pragma omp parallel for collapse(2)
 	for (int i = start; i < end; ++i)
@@ -161,7 +155,6 @@ void runge_kutta_4_step(std::vector<Body>& bodies, double tau, int start, int en
 		   k2.data(), counts.data(), displs.data(),
 		   MPI_BODY_XYZ, MPI_COMM_WORLD);
 	time_k2 += omp_get_wtime();
-	// std::cout << k2[3].r[0] << " " << k2[3].r[1] << " " << k2[3].r[2] << std::endl;
 	time_a -= omp_get_wtime();
 
 	compute_acceleration_local(k2, start, end);
@@ -231,11 +224,16 @@ void runge_kutta_4_step(std::vector<Body>& bodies, double tau, int start, int en
 
 int main(int argc, char** argv)
 {
+	// omp_set_num_threads(1);
+	bool random{false};
 	MPI_Init(&argc, &argv);
 	int rank, size;
 	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 	MPI_Comm_size(MPI_COMM_WORLD, &size);
-
+	if (rank == 0){
+		int num_threads = omp_get_num_procs();
+		std::cout  << "Number of nodes = " << size << ", number of tasks per node = " << num_threads << std::endl;
+	}
 	MPI_Datatype MPI_BODY_M_XYZ_V, MPI_BODY_V_A, MPI_BODY_XYZ;
 	{
 		MPI_Datatype tmp;
@@ -273,11 +271,10 @@ int main(int argc, char** argv)
 		MPI_Type_commit(&MPI_BODY_XYZ);
 		MPI_Type_free(&tmp);
 	}
-
-	bool random{true};
+	
 	std::vector<Body> bodies;
 	if (random){
-		int N = 10'000;
+		int N = 20'000;
 		bodies.resize(N);
 		if (rank == 0)
 		{
@@ -302,7 +299,7 @@ int main(int argc, char** argv)
 
 		double t = 0.0, tau = 0.01/4.0;
 		int num_steps = 40;
-//		int num_threads = 2;
+		//		int num_threads = 2;
 
 		time_copy = 0;
 		time_k2 = 0;
@@ -312,11 +309,14 @@ int main(int argc, char** argv)
 		time_cycle = 0;
 
 		auto time_rk = -omp_get_wtime();
+		std::vector<Body> k2 = bodies;
+		std::vector<Body> k3 = bodies;
+		std::vector<Body> k4 = bodies;
 
 		for (int step = 0; step < num_steps; ++step) {
-			runge_kutta_4_step(bodies, tau, start, end, MPI_COMM_WORLD, counts, displs, MPI_BODY_XYZ);
+			runge_kutta_4_step(bodies, k2, k3, k4, tau, start, end, MPI_COMM_WORLD, counts, displs, MPI_BODY_XYZ);
 
-			MPI_Allgatherv(MPI_IN_PLACE, counts[rank],MPI_BODY_XYZ,	bodies.data(),counts.data(),displs.data(),MPI_BODY_XYZ, MPI_COMM_WORLD);
+			MPI_Allgatherv(MPI_IN_PLACE, 0,MPI_DATATYPE_NULL,	bodies.data(),counts.data(),displs.data(),MPI_BODY_XYZ, MPI_COMM_WORLD);
 			t += tau;
 		}
 		MPI_Allgatherv(MPI_IN_PLACE, 0, MPI_DATATYPE_NULL,
@@ -334,7 +334,7 @@ int main(int argc, char** argv)
 
 
 			std::cout << "Time of calculation = " << time_rk/num_steps << std::endl;
-			std::cout << "speed up = " << 0.802574 / (time_rk/num_steps)  << std::endl;
+			std::cout << "speed up = " << 4.66776 / (time_rk/num_steps)  << std::endl;
 			std::cout << std::endl;
 		}
 	}
@@ -370,10 +370,12 @@ int main(int argc, char** argv)
 			off += counts[i];
 		}
 
-		double t = 0.0, tau = 0.01/8;
+		double t = 0.0, tau = 0.01;
 		int num_steps = 20.0 / tau ;
 		int output_every = int(0.1 / tau);
-
+		std::vector<Body> k2 = bodies;
+		std::vector<Body> k3 = bodies;
+		std::vector<Body> k4 = bodies;
 		for (int step = 0; step < num_steps; ++step) {
 			// if (rank == 0)
 			// {
@@ -381,17 +383,17 @@ int main(int argc, char** argv)
 			// 		write_positions(t, bodies, files);
 			// 	}
 			// }
-			if (step % output_every < 1e-6){
-				MPI_Allgatherv(MPI_IN_PLACE, 0, MPI_DATATYPE_NULL,
-								bodies.data(), counts.data(), displs.data(),
-								MPI_BODY_V_A, MPI_COMM_WORLD);
-				MPI_Barrier(MPI_COMM_WORLD);
-				if (rank == 0)
-					write_positions(t, bodies, files);
-			}
-			runge_kutta_4_step(bodies, tau, start, end, MPI_COMM_WORLD, counts, displs, MPI_BODY_XYZ);
+			// if (step % output_every < 1e-6){
+			// 	MPI_Allgatherv(MPI_IN_PLACE, 0, MPI_DATATYPE_NULL,
+			// 					bodies.data(), counts.data(), displs.data(),
+			// 					MPI_BODY_V_A, MPI_COMM_WORLD);
+			// 	MPI_Barrier(MPI_COMM_WORLD);
+			// 	if (rank == 0)
+			// 		write_positions(t, bodies, files);
+			// }
+			runge_kutta_4_step(bodies, k2, k3, k4, tau, start, end, MPI_COMM_WORLD, counts, displs, MPI_BODY_XYZ);
 
-			MPI_Allgatherv(MPI_IN_PLACE, counts[rank],MPI_BODY_XYZ,	bodies.data(),counts.data(),displs.data(),MPI_BODY_XYZ, MPI_COMM_WORLD);
+			MPI_Allgatherv(MPI_IN_PLACE, 0,MPI_DATATYPE_NULL,	bodies.data(),counts.data(),displs.data(),MPI_BODY_XYZ, MPI_COMM_WORLD);
 
 			t += tau;
 		}
