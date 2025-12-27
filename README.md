@@ -1,4 +1,4 @@
-# Parallel Computation
+# Parallel Computations
 
 This repository contains laboratory works on parallel computing using OpenMP, MPI, and CUDA technologies.
 
